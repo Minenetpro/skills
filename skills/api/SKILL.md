@@ -1,64 +1,67 @@
-# Minenet Client API v1
+# Client API v1
 
-REST API for programmatic access to Minecraft game servers.
+The Client API provides programmatic access to team resources via bearer token authentication. It is designed for external integrations, CI/CD pipelines, monitoring bots, and other automated systems.
 
 ## Base URL
 
 ```
-https://minenet.pro/api/client/v1
+/api/client/v1
 ```
 
 ## Authentication
 
-All requests require a Bearer token in the Authorization header:
+All requests must include an API token in the `Authorization` header:
 
 ```
-Authorization: Bearer mnp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+Authorization: Bearer mnp_<token>
 ```
 
-Tokens are team-scoped and created in the team settings dashboard. Token format: `mnp_` (can be `mna_`) prefix followed by 32 hex characters.
+Tokens are created in Team Settings and are scoped to a single team. They provide full access to all servers belonging to that team.
 
-## Rate Limits
+### Token Format
 
-- **Global**: 100 requests/minute per token
-- **File operations**: Additional per-endpoint limits (noted below)
+- **Prefix**: `mnp_` (Minenet Pro)
+- **Length**: 36 characters total (`mnp_` + 32 hex chars)
+- **Storage**: SHA-256 hashed (raw token never stored)
+- **Expiration**: Never expires (valid until revoked)
 
-When rate limited, response includes `Retry-After` header.
+### Error Responses
 
-## Error Format
+| Status | Code                   | Description                         |
+| ------ | ---------------------- | ----------------------------------- |
+| 401    | `MISSING_AUTH_HEADER`  | No Authorization header             |
+| 401    | `INVALID_AUTH_FORMAT`  | Header doesn't start with "Bearer " |
+| 401    | `EMPTY_TOKEN`          | Token is empty                      |
+| 401    | `INVALID_TOKEN_FORMAT` | Token doesn't start with "mnp\_"    |
+| 401    | `INVALID_TOKEN`        | Token not found or revoked          |
+| 429    | `RATE_LIMITED`         | Rate limit exceeded                 |
 
-```json
-{
-  "error": "Human-readable error message",
-  "code": "ERROR_CODE"
-}
+## Rate Limiting
+
+- **Limit**: 100 requests per minute per token
+- **Window**: Rolling 60-second window
+- **Scope**: Per-token (not per-team)
+
+When rate limited, response includes:
+
 ```
-
-Common error codes:
-
-- `MISSING_AUTH_HEADER` - No Authorization header
-- `INVALID_TOKEN` - Token invalid or revoked
-- `RATE_LIMITED` - Too many requests
-- `SERVER_NOT_FOUND` - Server doesn't exist or not authorized
-- `SERVER_INSTALLING` - Server is being installed (409)
-- `SERVER_OFFLINE` - Server not running
-- `VALIDATION_ERROR` - Invalid request parameters
+HTTP/1.1 429 Too Many Requests
+Retry-After: <seconds>
+```
 
 ---
 
 ## Endpoints
 
-### Servers
+### List Servers
 
-#### List Servers
-
-```http
-GET /servers
+```
+GET /api/client/v1/servers
 ```
 
-Returns all servers belonging to your team with status information.
+Returns all servers belonging to the authenticated team.
 
-**Response:**
+**Response**
 
 ```json
 {
@@ -67,12 +70,12 @@ Returns all servers belonging to your team with status information.
       "id": "550e8400-e29b-41d4-a716-446655440000",
       "name": "My Minecraft Server",
       "status": "running",
-      "address": "mc.example.com:25565",
+      "address": "play.example.com:25565",
       "resources": {
         "cpu": 45.2,
         "memory_bytes": 2147483648,
-        "disk_bytes": 5368709120,
-        "uptime_ms": 3600000
+        "disk_bytes": 10737418240,
+        "uptime_ms": 86400000
       }
     }
   ],
@@ -80,49 +83,108 @@ Returns all servers belonging to your team with status information.
 }
 ```
 
-**Status values:** `running`, `starting`, `stopping`, `offline`, `unknown`
+**Status Values**: `running`, `starting`, `stopping`, `offline`, `unknown`
 
 ---
 
-#### Send Power Action
+### Get Console History
 
-```http
-POST /servers/{id}/power
-Content-Type: application/json
+```
+GET /api/client/v1/servers/{id}/console
+```
 
+Returns recent console output from the server.
+
+**Query Parameters**
+
+| Parameter | Type    | Default | Range | Description               |
+| --------- | ------- | ------- | ----- | ------------------------- |
+| `size`    | integer | 100     | 1-500 | Number of lines to return |
+
+**Response**
+
+```json
 {
-  "action": "start"
+  "lines": [
+    "[12:00:00 INFO]: Server started",
+    "[12:00:01 INFO]: Player joined the game"
+  ],
+  "count": 2
 }
 ```
 
-**Actions:** `start`, `stop`, `restart`, `kill`
+**Error Codes**
 
-**Response:**
+| Status | Code                | Description                            |
+| ------ | ------------------- | -------------------------------------- |
+| 400    | `INVALID_SERVER_ID` | Server ID is not a valid UUID          |
+| 404    | `SERVER_NOT_FOUND`  | Server doesn't exist or not authorized |
+| 409    | `SERVER_INSTALLING` | Server is still being installed        |
+| 502    | `UPSTREAM_ERROR`    | Failed to fetch from backend           |
+
+---
+
+### Send Power Action
+
+```
+POST /api/client/v1/servers/{id}/power
+```
+
+Sends a power action to the server.
+
+**Request Body**
+
+```json
+{
+  "action": "restart"
+}
+```
+
+**Valid Actions**: `start`, `stop`, `restart`, `kill`
+
+**Response**
 
 ```json
 {
   "ok": true,
-  "action": "start",
-  "message": "Power action 'start' sent successfully"
+  "action": "restart",
+  "message": "Power action 'restart' sent successfully"
 }
 ```
+
+**Error Codes**
+
+| Status | Code                | Description                            |
+| ------ | ------------------- | -------------------------------------- |
+| 400    | `INVALID_SERVER_ID` | Server ID is not a valid UUID          |
+| 400    | `VALIDATION_ERROR`  | Invalid action value                   |
+| 404    | `SERVER_NOT_FOUND`  | Server doesn't exist or not authorized |
+| 409    | `SERVER_INSTALLING` | Server is still being installed        |
+| 502    | `UPSTREAM_ERROR`    | Failed to send to backend              |
 
 ---
 
-#### Send Console Command
+### Send Command
 
-```http
-POST /servers/{id}/command
-Content-Type: application/json
+```
+POST /api/client/v1/servers/{id}/command
+```
 
+Sends a console command to the server.
+
+**Request Body**
+
+```json
 {
-  "command": "say Hello World!"
+  "command": "say Hello from API!"
 }
 ```
 
-Command max length: 10,000 characters. Server must be running.
+**Constraints**
 
-**Response:**
+- `command`: Required, 1-10000 characters
+
+**Response**
 
 ```json
 {
@@ -131,62 +193,70 @@ Command max length: 10,000 characters. Server must be running.
 }
 ```
 
----
+**Error Codes**
 
-#### Get Console History
-
-```http
-GET /servers/{id}/console?size=100
-```
-
-**Query Parameters:**
-
-- `size` (optional): Number of lines, 1-500, default 100
-
-**Response:**
-
-```json
-{
-  "lines": [
-    "[12:00:01] [Server thread/INFO]: Player joined the game",
-    "[12:00:05] [Server thread/INFO]: Hello World!"
-  ],
-  "count": 2
-}
-```
+| Status | Code                | Description                            |
+| ------ | ------------------- | -------------------------------------- |
+| 400    | `INVALID_SERVER_ID` | Server ID is not a valid UUID          |
+| 400    | `VALIDATION_ERROR`  | Command is empty or too long           |
+| 404    | `SERVER_NOT_FOUND`  | Server doesn't exist or not authorized |
+| 409    | `SERVER_INSTALLING` | Server is still being installed        |
+| 502    | `SERVER_OFFLINE`    | Server is not running                  |
+| 502    | `UPSTREAM_ERROR`    | Failed to send to backend              |
 
 ---
 
-### File Operations
+## File Management Endpoints
 
-All file paths are relative to the server root directory.
+All file endpoints use direct Wings node communication for lower latency.
 
-#### List Directory
+### Rate Limits by Endpoint
 
-```http
-GET /servers/{id}/files/list?directory=/plugins
+| Endpoint                 | Limit  | Notes               |
+| ------------------------ | ------ | ------------------- |
+| `files/list`             | None   | Read-only           |
+| `files/contents`         | None   | Read-only, 10MB max |
+| `files/search`           | 30/min | Can be expensive    |
+| `files/write`            | 60/min | Write operation     |
+| `files/delete`           | 30/min | Destructive         |
+| `files/rename`           | 30/min | Write operation     |
+| `files/copy`             | 30/min | Write operation     |
+| `files/create-directory` | 30/min | Write operation     |
+| `files/compress`         | 20/min | Heavy operation     |
+| `files/decompress`       | 20/min | Heavy operation     |
+
+---
+
+### List Directory
+
+```
+GET /api/client/v1/servers/{id}/files/list
 ```
 
-**Query Parameters:**
+Lists contents of a directory on the server.
 
-- `directory` (optional): Path to list, default `/`
+**Query Parameters**
 
-**Response:**
+| Parameter   | Type   | Default | Description            |
+| ----------- | ------ | ------- | ---------------------- |
+| `directory` | string | `/`     | Directory path to list |
+
+**Response**
 
 ```json
 {
   "files": [
     {
       "name": "server.properties",
-      "size": 1024,
+      "size": 1234,
       "is_file": true,
       "is_directory": false,
       "is_symlink": false,
       "mime": "text/plain",
-      "mode": "0644",
-      "mode_bits": "644",
+      "mode": "-rw-r--r--",
+      "mode_bits": "0644",
       "modified_at": "2024-01-15T10:30:00Z",
-      "created_at": "2024-01-01T00:00:00Z"
+      "created_at": "2024-01-10T08:00:00Z"
     }
   ],
   "count": 1
@@ -195,185 +265,243 @@ GET /servers/{id}/files/list?directory=/plugins
 
 ---
 
-#### Read File
+### Read File Contents
 
-```http
-GET /servers/{id}/files/contents?file=/server.properties
+```
+GET /api/client/v1/servers/{id}/files/contents
 ```
 
-**Query Parameters:**
+Reads the contents of a file.
 
-- `file` (required): Path to file
+**Query Parameters**
 
-**Response:** Raw file contents as `text/plain`. Max file size: 10MB.
+| Parameter | Type   | Required | Description       |
+| --------- | ------ | -------- | ----------------- |
+| `file`    | string | Yes      | File path to read |
+
+**Constraints**
+
+- Maximum file size: 10MB
+- Returns `413 FILE_TOO_LARGE` if file exceeds limit
+
+**Response**: Raw file contents with `Content-Type: text/plain`
 
 ---
 
-#### Write File
+### Search Files
 
-```http
-POST /servers/{id}/files/write?file=/server.properties
-Content-Type: text/plain
-
-motd=Welcome to my server!
-max-players=20
+```
+GET /api/client/v1/servers/{id}/files/search
 ```
 
-**Query Parameters:**
+Searches for files matching a glob pattern.
 
-- `file` (required): Path to file
+**Query Parameters**
 
-**Request Body:** Raw file contents
+| Parameter   | Type   | Required | Default | Description                                |
+| ----------- | ------ | -------- | ------- | ------------------------------------------ |
+| `pattern`   | string | Yes      | -       | Search pattern (glob-style, e.g., `*.yml`) |
+| `directory` | string | No       | `/`     | Directory to search in                     |
 
-**Rate Limit:** 60/minute
+**Rate Limit**: 30 requests/minute
 
-**Response:**
+**Response**
 
 ```json
 {
-  "ok": true
+  "results": [
+    {
+      "name": "config.yml",
+      "directory": "/plugins/MyPlugin",
+      "file": {
+        "name": "config.yml",
+        "size": 1234,
+        "is_file": true,
+        "is_directory": false,
+        "mime": "text/yaml",
+        "mode": "-rw-r--r--",
+        "mode_bits": "0644",
+        "modified_at": "2024-01-15T10:30:00Z"
+      }
+    }
+  ],
+  "count": 1
 }
 ```
 
 ---
 
-#### Delete Files
+### Write File
 
-```http
-POST /servers/{id}/files/delete
-Content-Type: application/json
-
-{
-  "root": "/plugins",
-  "files": ["OldPlugin.jar", "AnotherPlugin.jar"]
-}
+```
+POST /api/client/v1/servers/{id}/files/write
 ```
 
-**Request Body:**
+Writes content to a file.
 
-- `root` (optional): Base directory, default `/`
-- `files` (required): Array of file/folder names (max 100)
+**Query Parameters**
 
-**Rate Limit:** 30/minute
+| Parameter | Type   | Required | Description        |
+| --------- | ------ | -------- | ------------------ |
+| `file`    | string | Yes      | File path to write |
 
-**Response:**
+**Request Body**: Raw file contents (`Content-Type: text/plain`)
+
+**Rate Limit**: 60 requests/minute
+
+**Audit Event**: `server.file_edited` (with diff, redacted for sensitive files)
+
+**Response**
 
 ```json
-{
-  "ok": true
-}
+{ "ok": true }
 ```
 
 ---
 
-#### Rename/Move Files
+### Delete Files
 
-```http
-POST /servers/{id}/files/rename
-Content-Type: application/json
+```
+POST /api/client/v1/servers/{id}/files/delete
+```
 
+Deletes files or directories.
+
+**Request Body**
+
+```json
 {
   "root": "/",
-  "files": [
-    { "from": "old-name.txt", "to": "new-name.txt" },
-    { "from": "file.txt", "to": "subfolder/file.txt" }
-  ]
+  "files": ["file1.txt", "folder/"]
 }
 ```
 
-**Request Body:**
+**Constraints**: Maximum 100 files per request
 
-- `root` (optional): Base directory, default `/`
-- `files` (required): Array of rename operations (max 100)
+**Rate Limit**: 30 requests/minute
 
-**Rate Limit:** 30/minute
+**Audit Event**: `server.file_deleted`
 
-**Response:**
+**Response**
 
 ```json
-{
-  "ok": true
-}
+{ "ok": true }
 ```
 
 ---
 
-#### Copy File
+### Rename/Move Files
 
-```http
-POST /servers/{id}/files/copy
-Content-Type: application/json
-
-{
-  "location": "/config/settings.yml"
-}
+```
+POST /api/client/v1/servers/{id}/files/rename
 ```
 
-Creates a copy with `copy` suffix (e.g., `settings copy.yml`).
+Renames or moves files.
 
-**Rate Limit:** 30/minute
-
-**Response:**
+**Request Body**
 
 ```json
-{
-  "ok": true
-}
-```
-
----
-
-#### Create Directory
-
-```http
-POST /servers/{id}/files/create-directory
-Content-Type: application/json
-
 {
   "root": "/",
-  "name": "backups"
+  "files": [{ "from": "old-name.txt", "to": "new-name.txt" }]
 }
 ```
 
-**Request Body:**
+**Constraints**: Maximum 100 files per request
 
-- `root` (optional): Parent directory, default `/`
-- `name` (required): New directory name
+**Rate Limit**: 30 requests/minute
 
-**Rate Limit:** 30/minute
+**Audit Event**: `server.file_renamed`
 
-**Response:**
+**Response**
 
 ```json
-{
-  "ok": true
-}
+{ "ok": true }
 ```
 
 ---
 
-#### Compress Files
+### Copy File
 
-```http
-POST /servers/{id}/files/compress
-Content-Type: application/json
+```
+POST /api/client/v1/servers/{id}/files/copy
+```
 
+Copies a file.
+
+**Request Body**
+
+```json
 {
-  "root": "/",
-  "files": ["plugins", "config"]
+  "location": "/path/to/file.txt"
 }
 ```
 
-Creates a `.tar.gz` archive.
+**Rate Limit**: 30 requests/minute
 
-**Request Body:**
+**Audit Event**: `server.file_copied`
 
-- `root` (optional): Base directory, default `/`
-- `files` (required): Array of files/folders to compress (max 100)
+**Response**
 
-**Rate Limit:** 20/minute
+```json
+{ "ok": true }
+```
 
-**Response:**
+---
+
+### Create Directory
+
+```
+POST /api/client/v1/servers/{id}/files/create-directory
+```
+
+Creates a new directory.
+
+**Request Body**
+
+```json
+{
+  "root": "/",
+  "name": "new-folder"
+}
+```
+
+**Rate Limit**: 30 requests/minute
+
+**Audit Event**: `server.folder_created`
+
+**Response**
+
+```json
+{ "ok": true }
+```
+
+---
+
+### Compress Files
+
+```
+POST /api/client/v1/servers/{id}/files/compress
+```
+
+Compresses files into an archive.
+
+**Request Body**
+
+```json
+{
+  "root": "/",
+  "files": ["folder1", "file1.txt"]
+}
+```
+
+**Constraints**: Maximum 100 files per request
+
+**Rate Limit**: 20 requests/minute
+
+**Audit Event**: `server.file_compressed`
+
+**Response**
 
 ```json
 {
@@ -383,142 +511,79 @@ Creates a `.tar.gz` archive.
     "size": 1048576,
     "is_file": true,
     "is_directory": false,
-    "is_symlink": false,
     "mime": "application/gzip",
-    "mode": "0644",
-    "mode_bits": "644",
-    "modified_at": "2024-01-15T10:30:00Z",
-    "created_at": "2024-01-15T10:30:00Z"
+    "mode": "-rw-r--r--",
+    "mode_bits": "0644",
+    "modified_at": "2024-01-15T10:30:00Z"
   }
 }
 ```
 
 ---
 
-#### Decompress Archive
+### Decompress Archive
 
-```http
-POST /servers/{id}/files/decompress
-Content-Type: application/json
+```
+POST /api/client/v1/servers/{id}/files/decompress
+```
 
+Decompresses an archive.
+
+**Request Body**
+
+```json
 {
   "root": "/",
-  "file": "backup.tar.gz"
+  "file": "archive.tar.gz"
 }
 ```
 
-Extracts archive contents to the root directory.
+**Rate Limit**: 20 requests/minute
 
-**Supported formats:** `.zip`, `.tar`, `.tar.gz`, `.tgz`, `.tar.bz2`
+**Audit Event**: `server.file_decompressed`
 
-**Rate Limit:** 20/minute
-
-**Response:**
+**Response**
 
 ```json
-{
-  "ok": true
-}
+{ "ok": true }
 ```
 
 ---
 
-#### Search Files
+## Remote Downloads
 
-```http
-GET /servers/{id}/files/search?pattern=*.yml&directory=/
-```
+Remote download endpoints allow you to download files from external URLs directly to the server.
 
-**Query Parameters:**
+### Rate Limits
 
-- `pattern` (required): Glob pattern (e.g., `*.yml`, `config*`)
-- `directory` (optional): Directory to search, default `/`
-
-**Rate Limit:** 30/minute
-
-**Response:**
-
-```json
-{
-  "results": [
-    {
-      "name": "config.yml",
-      "directory": "/plugins/Essentials",
-      "file": {
-        "name": "config.yml",
-        "size": 2048,
-        "is_file": true,
-        "is_directory": false,
-        "is_symlink": false,
-        "mime": "text/yaml",
-        "mode": "0644",
-        "mode_bits": "644",
-        "modified_at": "2024-01-15T10:30:00Z",
-        "created_at": "2024-01-01T00:00:00Z"
-      }
-    }
-  ],
-  "count": 1
-}
-```
+| Endpoint                   | Limit  |
+| -------------------------- | ------ |
+| `files/pull` (GET)         | 60/min |
+| `files/pull` (POST)        | 10/min |
+| `files/pull/{id}` (DELETE) | 30/min |
 
 ---
 
-#### Download File from URL
+### List Active Downloads
 
-```http
-POST /servers/{id}/files/pull
-Content-Type: application/json
-
-{
-  "url": "https://example.com/plugin.jar",
-  "directory": "/plugins",
-  "filename": "MyPlugin.jar",
-  "use_header": false,
-  "foreground": false
-}
+```
+GET /api/client/v1/servers/{id}/files/pull
 ```
 
-Downloads a file from a URL to the server.
+Returns all active remote downloads for the server.
 
-**Request Body:**
+**Rate Limit**: 60 requests/minute
 
-- `url` (required): URL to download from
-- `directory` (optional): Target directory, default `/`
-- `filename` (optional): Override filename
-- `use_header` (optional): Use Content-Disposition header for filename
-- `foreground` (optional): Wait for download to complete
-
-**Rate Limit:** 10/minute
-
-**Response:**
-
-```json
-{
-  "ok": true
-}
-```
-
----
-
-#### List Active Downloads
-
-```http
-GET /servers/{id}/files/pull
-```
-
-**Rate Limit:** 60/minute
-
-**Response:**
+**Response**
 
 ```json
 {
   "downloads": [
     {
       "identifier": "abc123",
-      "url": "https://example.com/large-file.zip",
+      "url": "https://example.com/file.jar",
       "progress": 45.5,
-      "size": 104857600,
+      "size": 10485760,
       "error": null
     }
   ],
@@ -526,254 +591,455 @@ GET /servers/{id}/files/pull
 }
 ```
 
+**Download Object**
+
+| Field        | Type           | Description                      |
+| ------------ | -------------- | -------------------------------- |
+| `identifier` | string         | Unique download identifier       |
+| `url`        | string         | Source URL being downloaded      |
+| `progress`   | number         | Download progress (0-100)        |
+| `size`       | number         | Total file size in bytes         |
+| `error`      | string \| null | Error message if download failed |
+
 ---
 
-#### Cancel Download
+### Start Remote Download
 
-```http
-DELETE /servers/{id}/files/pull/{downloadId}
+```
+POST /api/client/v1/servers/{id}/files/pull
 ```
 
-Cancels an active download by its identifier.
+Starts downloading a file from an external URL.
 
-**Response:**
+**Rate Limit**: 10 requests/minute
+
+**Request Body**
 
 ```json
 {
-  "ok": true
+  "url": "https://example.com/file.jar",
+  "directory": "/plugins",
+  "filename": "custom-name.jar",
+  "use_header": false,
+  "foreground": false
+}
+```
+
+**Request Fields**
+
+| Field        | Type    | Required | Default | Description                                     |
+| ------------ | ------- | -------- | ------- | ----------------------------------------------- |
+| `url`        | string  | Yes      | -       | URL to download from (must be HTTPS)            |
+| `directory`  | string  | Yes      | -       | Target directory on server                      |
+| `filename`   | string  | No       | -       | Custom filename (uses URL filename if omitted)  |
+| `use_header` | boolean | No       | false   | Use Content-Disposition header for filename     |
+| `foreground` | boolean | No       | false   | Wait for download to complete before responding |
+
+**Audit Event**: `server.file_downloaded`
+
+**Response**
+
+```json
+{ "ok": true }
+```
+
+---
+
+### Cancel Remote Download
+
+```
+DELETE /api/client/v1/servers/{id}/files/pull/{downloadId}
+```
+
+Cancels an active remote download.
+
+**Rate Limit**: 30 requests/minute
+
+**Path Parameters**
+
+| Parameter    | Type   | Description                            |
+| ------------ | ------ | -------------------------------------- |
+| `downloadId` | string | Download identifier from list endpoint |
+
+**Audit Event**: `server.file_download_cancelled`
+
+**Response**
+
+```json
+{ "ok": true }
+```
+
+**Error Codes**
+
+| Status | Code                  | Description            |
+| ------ | --------------------- | ---------------------- |
+| 400    | `INVALID_DOWNLOAD_ID` | Download ID is empty   |
+| 404    | `DOWNLOAD_NOT_FOUND`  | Download doesn't exist |
+
+---
+
+### File Endpoint Error Codes
+
+| Status | Code                | Description                            |
+| ------ | ------------------- | -------------------------------------- |
+| 400    | `INVALID_SERVER_ID` | Server ID is not a valid UUID          |
+| 400    | `NO_NODE_ASSIGNED`  | Server has no assigned node            |
+| 400    | `VALIDATION_ERROR`  | Input validation failed                |
+| 404    | `SERVER_NOT_FOUND`  | Server doesn't exist or not authorized |
+| 404    | `FILE_NOT_FOUND`    | File doesn't exist                     |
+| 413    | `FILE_TOO_LARGE`    | File exceeds 10MB limit                |
+| 429    | `RATE_LIMITED`      | Per-endpoint rate limit exceeded       |
+| 502    | `NODE_NOT_FOUND`    | Node not registered                    |
+| 502    | `WINGS_ERROR`       | Wings node returned an error           |
+
+---
+
+## Modrinth API
+
+Endpoints for searching and retrieving information from Modrinth (mods, plugins, modpacks).
+
+### Search Modrinth
+
+```
+GET /api/client/v1/modrinth/search
+```
+
+Search for mods and plugins on Modrinth.
+
+**Query Parameters**
+
+| Parameter      | Type    | Default   | Description                                                    |
+| -------------- | ------- | --------- | -------------------------------------------------------------- |
+| `query`        | string  | -         | Search text                                                    |
+| `limit`        | integer | 10        | Results per page (1-100)                                       |
+| `offset`       | integer | 0         | Pagination offset                                              |
+| `index`        | string  | relevance | Sort: `relevance`, `downloads`, `follows`, `newest`, `updated` |
+| `project_type` | string  | -         | Filter: `mod` or `plugin`                                      |
+| `versions`     | string  | -         | Comma-separated game versions (e.g., `1.21.4,1.20.1`)          |
+| `loaders`      | string  | -         | Comma-separated loaders (e.g., `paper,fabric`)                 |
+| `categories`   | string  | -         | Comma-separated categories                                     |
+| `server_side`  | string  | -         | Filter: `required` or `optional`                               |
+
+**Response**
+
+```json
+{
+  "count": 5,
+  "total_hits": 150,
+  "offset": 0,
+  "limit": 10,
+  "query": "luckperms",
+  "results": [
+    {
+      "project_id": "Vebnzrzj",
+      "slug": "luckperms",
+      "title": "LuckPerms",
+      "description": "A permissions plugin",
+      "downloads": 5000000,
+      "icon_url": "https://...",
+      "project_type": "mod",
+      "server_side": "required",
+      "client_side": "optional",
+      "latest_version": "5.4.102",
+      "categories": ["utility"],
+      "versions": ["1.21.4", "1.20.1"]
+    }
+  ]
 }
 ```
 
 ---
 
-## Code Examples
+### List Project Versions
 
-### JavaScript/TypeScript
+```
+GET /api/client/v1/modrinth/projects/{id}/versions
+```
 
-```javascript
-const API_BASE = "https://minenet.pro/api/client/v1";
-const TOKEN = "mnp_your_token_here";
+List available versions for a Modrinth project.
 
-async function api(endpoint, options = {}) {
-  const res = await fetch(`${API_BASE}${endpoint}`, {
-    ...options,
-    headers: {
-      Authorization: `Bearer ${TOKEN}`,
-      "Content-Type": "application/json",
-      ...options.headers,
-    },
-  });
-  if (!res.ok) {
-    const error = await res.json();
-    throw new Error(error.error || `HTTP ${res.status}`);
-  }
-  return res.json();
+**Path Parameters**
+
+| Parameter | Type   | Description        |
+| --------- | ------ | ------------------ |
+| `id`      | string | Project ID or slug |
+
+**Query Parameters**
+
+| Parameter       | Type   | Description                                    |
+| --------------- | ------ | ---------------------------------------------- |
+| `loaders`       | string | Comma-separated loaders (e.g., `paper,fabric`) |
+| `game_versions` | string | Comma-separated game versions (e.g., `1.21.4`) |
+| `featured`      | string | Set to `true` to only return featured versions |
+
+**Response**
+
+```json
+{
+  "project_id": "luckperms",
+  "count": 25,
+  "versions": [
+    {
+      "id": "abc123",
+      "version_number": "5.4.102",
+      "name": "LuckPerms v5.4.102",
+      "date_published": "2024-01-15T10:00:00Z",
+      "loaders": ["paper", "spigot"],
+      "game_versions": ["1.21.4", "1.20.1"],
+      "featured": true,
+      "version_type": "release",
+      "downloads": 50000,
+      "files": [
+        {
+          "filename": "LuckPerms-5.4.102.jar",
+          "url": "https://...",
+          "primary": true,
+          "size": 1234567
+        }
+      ],
+      "dependencies": []
+    }
+  ]
 }
-
-// List servers
-const { servers } = await api("/servers");
-
-// Start a server
-await api(`/servers/${servers[0].id}/power`, {
-  method: "POST",
-  body: JSON.stringify({ action: "start" }),
-});
-
-// Send command
-await api(`/servers/${serverId}/command`, {
-  method: "POST",
-  body: JSON.stringify({ command: "say Hello!" }),
-});
-
-// Read file
-const response = await fetch(
-  `${API_BASE}/servers/${serverId}/files/contents?file=/server.properties`,
-  {
-    headers: { Authorization: `Bearer ${TOKEN}` },
-  }
-);
-const content = await response.text();
-
-// Write file
-await fetch(
-  `${API_BASE}/servers/${serverId}/files/write?file=/server.properties`,
-  {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${TOKEN}`,
-      "Content-Type": "text/plain",
-    },
-    body: "motd=My Server\nmax-players=50",
-  }
-);
-```
-
-### Python
-
-```python
-import requests
-
-API_BASE = "https://minenet.pro/api/client/v1"
-TOKEN = "mnp_your_token_here"
-HEADERS = {"Authorization": f"Bearer {TOKEN}"}
-
-# List servers
-response = requests.get(f"{API_BASE}/servers", headers=HEADERS)
-servers = response.json()["servers"]
-
-# Start server
-requests.post(
-    f"{API_BASE}/servers/{servers[0]['id']}/power",
-    headers=HEADERS,
-    json={"action": "start"}
-)
-
-# Send command
-requests.post(
-    f"{API_BASE}/servers/{server_id}/command",
-    headers=HEADERS,
-    json={"command": "say Hello!"}
-)
-
-# Read file
-response = requests.get(
-    f"{API_BASE}/servers/{server_id}/files/contents",
-    headers=HEADERS,
-    params={"file": "/server.properties"}
-)
-content = response.text
-
-# Write file
-requests.post(
-    f"{API_BASE}/servers/{server_id}/files/write",
-    headers={**HEADERS, "Content-Type": "text/plain"},
-    params={"file": "/server.properties"},
-    data="motd=My Server\nmax-players=50"
-)
-```
-
-### cURL
-
-```bash
-# List servers
-curl -H "Authorization: Bearer mnp_xxx" \
-  "https://minenet.pro/api/client/v1/servers"
-
-# Start server
-curl -X POST -H "Authorization: Bearer mnp_xxx" \
-  -H "Content-Type: application/json" \
-  -d '{"action":"start"}' \
-  "https://minenet.pro/api/client/v1/servers/{id}/power"
-
-# Send command
-curl -X POST -H "Authorization: Bearer mnp_xxx" \
-  -H "Content-Type: application/json" \
-  -d '{"command":"say Hello!"}' \
-  "https://minenet.pro/api/client/v1/servers/{id}/command"
-
-# Read file
-curl -H "Authorization: Bearer mnp_xxx" \
-  "https://minenet.pro/api/client/v1/servers/{id}/files/contents?file=/server.properties"
-
-# Write file
-curl -X POST -H "Authorization: Bearer mnp_xxx" \
-  -H "Content-Type: text/plain" \
-  -d "motd=My Server" \
-  "https://minenet.pro/api/client/v1/servers/{id}/files/write?file=/server.properties"
 ```
 
 ---
 
-## Common Workflows
+### Get Version Details
 
-### Check Server Status and Start if Offline
+```
+GET /api/client/v1/modrinth/versions/{versionId}
+```
 
-```javascript
-const { servers } = await api("/servers");
-const server = servers.find((s) => s.name === "My Server");
+Get details for a specific version.
 
-if (server.status === "offline") {
-  await api(`/servers/${server.id}/power`, {
-    method: "POST",
-    body: JSON.stringify({ action: "start" }),
-  });
-  console.log("Server starting...");
+**Path Parameters**
+
+| Parameter   | Type   | Description |
+| ----------- | ------ | ----------- |
+| `versionId` | string | Version ID  |
+
+**Response**
+
+```json
+{
+  "id": "abc123",
+  "project_id": "Vebnzrzj",
+  "name": "LuckPerms v5.4.102",
+  "version_number": "5.4.102",
+  "changelog": "- Fixed bug...",
+  "date_published": "2024-01-15T10:00:00Z",
+  "downloads": 50000,
+  "version_type": "release",
+  "loaders": ["paper", "spigot"],
+  "game_versions": ["1.21.4", "1.20.1"],
+  "featured": true,
+  "files": [
+    {
+      "filename": "LuckPerms-5.4.102.jar",
+      "url": "https://...",
+      "primary": true,
+      "size": 1234567,
+      "hashes": {
+        "sha1": "abc...",
+        "sha512": "def..."
+      }
+    }
+  ],
+  "dependencies": []
 }
 ```
 
-### Backup Configuration Files
+**Error Codes**
 
-```javascript
-// Compress config files
-const { archive } = await api(`/servers/${serverId}/files/compress`, {
-  method: "POST",
-  body: JSON.stringify({
-    root: "/",
-    files: ["server.properties", "bukkit.yml", "spigot.yml", "plugins"],
-  }),
-});
+| Status | Code                 | Description             |
+| ------ | -------------------- | ----------------------- |
+| 400    | `MISSING_PROJECT_ID` | Project ID not provided |
+| 400    | `MISSING_VERSION_ID` | Version ID not provided |
+| 404    | `PROJECT_NOT_FOUND`  | Project doesn't exist   |
+| 404    | `VERSION_NOT_FOUND`  | Version doesn't exist   |
 
-console.log(`Backup created: ${archive.name}`);
+---
+
+## CurseForge API
+
+Endpoints for searching and retrieving information from CurseForge (modpacks, mods).
+
+### Search CurseForge
+
+```
+GET /api/client/v1/curseforge/search
 ```
 
-### Install Plugin from URL
+Search for modpacks (or mods) on CurseForge.
 
-```javascript
-await api(`/servers/${serverId}/files/pull`, {
-  method: "POST",
-  body: JSON.stringify({
-    url: "https://cdn.modrinth.com/data/xxx/versions/yyy/plugin.jar",
-    directory: "/plugins",
-    foreground: true,
-  }),
-});
+**Query Parameters**
 
-// Restart to load new plugin
-await api(`/servers/${serverId}/power`, {
-  method: "POST",
-  body: JSON.stringify({ action: "restart" }),
-});
-```
+| Parameter      | Type    | Default | Description                               |
+| -------------- | ------- | ------- | ----------------------------------------- |
+| `searchFilter` | string  | -       | Search text (alias: `query`)              |
+| `pageSize`     | integer | 10      | Results per page (1-50)                   |
+| `index`        | integer | 0       | Pagination offset                         |
+| `sortField`    | integer | 2       | Sort: 1=name, 2=popularity, 3=lastUpdated |
+| `sortOrder`    | string  | desc    | Sort order: `asc` or `desc`               |
+| `gameId`       | integer | 432     | Game ID (432 = Minecraft)                 |
+| `classId`      | integer | 4471    | Class ID (4471 = Modpacks, 6 = Mods)      |
+| `gameVersion`  | string  | -       | Filter by game version                    |
 
-### Update Server Configuration
+**Response**
 
-```javascript
-// Read current config
-const res = await fetch(
-  `${API_BASE}/servers/${serverId}/files/contents?file=/server.properties`,
-  { headers: { Authorization: `Bearer ${TOKEN}` } }
-);
-let config = await res.text();
-
-// Modify config
-config = config.replace(/max-players=\d+/, "max-players=100");
-config = config.replace(/motd=.*/, "motd=Welcome to our server!");
-
-// Write updated config
-await fetch(
-  `${API_BASE}/servers/${serverId}/files/write?file=/server.properties`,
-  {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${TOKEN}`,
-      "Content-Type": "text/plain",
-    },
-    body: config,
-  }
-);
-
-// Restart to apply changes
-await api(`/servers/${serverId}/power`, {
-  method: "POST",
-  body: JSON.stringify({ action: "restart" }),
-});
+```json
+{
+  "count": 5,
+  "total_count": 150,
+  "index": 0,
+  "page_size": 10,
+  "search_filter": "rlcraft",
+  "results": [
+    {
+      "id": 285109,
+      "name": "RLCraft",
+      "slug": "rlcraft",
+      "summary": "A modpack focused on...",
+      "download_count": 20000000,
+      "website_url": "https://...",
+      "logo_url": "https://...",
+      "categories": ["Adventure", "Hardcore"],
+      "latest_files": []
+    }
+  ]
+}
 ```
 
 ---
 
-## Path Security
+### Get Project Details
 
-- Path traversal (`..`) is blocked
-- Null bytes in paths are rejected
-- Maximum path length: 4096 characters
-- Maximum batch operations: 100 files per request
+```
+GET /api/client/v1/curseforge/projects/{projectId}
+```
+
+Get details for a specific CurseForge project.
+
+**Path Parameters**
+
+| Parameter   | Type    | Description           |
+| ----------- | ------- | --------------------- |
+| `projectId` | integer | CurseForge project ID |
+
+**Response**
+
+```json
+{
+  "id": 285109,
+  "name": "RLCraft",
+  "slug": "rlcraft",
+  "summary": "A modpack focused on...",
+  "download_count": 20000000,
+  "date_created": "2019-07-01T00:00:00Z",
+  "date_modified": "2024-01-15T10:00:00Z",
+  "date_released": "2024-01-10T00:00:00Z",
+  "website_url": "https://...",
+  "wiki_url": null,
+  "issues_url": null,
+  "source_url": null,
+  "logo_url": "https://...",
+  "logo_thumbnail_url": "https://...",
+  "categories": [{ "id": 1, "name": "Adventure", "slug": "adventure" }],
+  "authors": [{ "id": 123, "name": "Shivaxi", "url": "https://..." }],
+  "latest_files": [
+    {
+      "id": 456789,
+      "display_name": "RLCraft 2.9.3",
+      "file_name": "RLCraft-2.9.3.zip",
+      "file_date": "2024-01-10T00:00:00Z",
+      "game_versions": ["1.12.2"],
+      "server_pack_file_id": 456790
+    }
+  ],
+  "latest_files_indexes": []
+}
+```
+
+---
+
+### List Project Versions
+
+```
+GET /api/client/v1/curseforge/projects/{projectId}/versions
+```
+
+List available files/versions for a CurseForge project.
+
+**Path Parameters**
+
+| Parameter   | Type    | Description           |
+| ----------- | ------- | --------------------- |
+| `projectId` | integer | CurseForge project ID |
+
+**Query Parameters**
+
+| Parameter       | Type    | Default | Description             |
+| --------------- | ------- | ------- | ----------------------- |
+| `pageSize`      | integer | 10      | Results per page (1-50) |
+| `index`         | integer | 0       | Pagination offset       |
+| `gameVersion`   | string  | -       | Filter by game version  |
+| `modLoaderType` | string  | -       | Filter by mod loader    |
+
+**Response**
+
+```json
+{
+  "project_id": "285109",
+  "count": 10,
+  "total_count": 50,
+  "index": 0,
+  "page_size": 10,
+  "versions": [
+    {
+      "id": 456789,
+      "display_name": "RLCraft 2.9.3",
+      "file_name": "RLCraft-2.9.3.zip",
+      "file_date": "2024-01-10T00:00:00Z",
+      "file_size": 104857600,
+      "download_count": 500000,
+      "download_url": "https://...",
+      "game_versions": ["1.12.2"],
+      "release_type": "release",
+      "server_pack_file_id": 456790,
+      "parent_project_file_id": null,
+      "is_server_pack": false,
+      "dependencies": []
+    }
+  ]
+}
+```
+
+**Error Codes**
+
+| Status | Code                 | Description                       |
+| ------ | -------------------- | --------------------------------- |
+| 400    | `MISSING_PROJECT_ID` | Project ID not provided           |
+| 404    | `PROJECT_NOT_FOUND`  | Project doesn't exist             |
+| 500    | `CONFIG_ERROR`       | CurseForge API key not configured |
+
+---
+
+### Security Notes
+
+**Path Validation**
+
+All file paths are validated to prevent:
+
+- Path traversal attacks (`..` not allowed)
+- Null byte injection
+
+**Sensitive File Protection**
+
+Files matching these patterns have their diffs hidden in audit logs:
+
+- `.env`, `.env.*`
+- Files containing `secret`, `credential`, `password`
+- `.key`, `.pem`, `.p12`, `.pfx`
+- `id_rsa`, `id_ed25519`
+- `.htpasswd`
